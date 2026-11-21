@@ -1,206 +1,186 @@
 #!/usr/bin/env python3
-"""Render the news-image-20261120 entry: a 1024x1024 newspaper front page
-summing up Friday 20 November 2026, drawn with PIL and Noto fonts.
+"""Draw a 1024x1024 newspaper front page summarising Friday 20 November 2026.
 
-Eight verified stories, two columns by four rows of cards under a navy
-masthead. The script measures every headline and summary before drawing and
-shrinks the type until all eight cards fit, so the output is deterministic.
+Everything is drawn in code with PIL. No external image is used.
 """
-
-import os
 
 from PIL import Image, ImageDraw, ImageFont
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-TARGET = os.path.join(BASE, "entry.png")
+W, H = 1024, 1024
+OUT = "entry.png"
 
-CANVAS = (1024, 1024)
-PAPER = (247, 242, 231)
-NAVY = (20, 38, 74)
-GOLD = (201, 162, 39)
-INK = (24, 24, 24)
-BODY_GREY = (74, 72, 66)
-FOOT_GREY = (110, 108, 100)
+PAPER = (247, 242, 231)      # warm off-white
+NAVY = (22, 35, 63)          # masthead band
+GOLD = (198, 158, 62)        # masthead date line and rule
+INK = (28, 28, 28)           # body text
 CARD = (255, 255, 255)
-CARD_EDGE = (205, 198, 184)
+CARD_BORDER = (216, 210, 196)
+FOOTER_GREY = (110, 108, 100)
 
-NOTO = "/usr/share/fonts/truetype/noto"
+FONT_DIR = "/usr/share/fonts/truetype/noto/"
+SERIF_BOLD = FONT_DIR + "NotoSerif-Bold.ttf"
+SANS_BOLD = FONT_DIR + "NotoSans-Bold.ttf"
+SANS_REG = FONT_DIR + "NotoSans-Regular.ttf"
 
-
-def serif(size):
-    return ImageFont.truetype(os.path.join(NOTO, "NotoSerif-Bold.ttf"), size)
-
-
-def sans(size):
-    return ImageFont.truetype(os.path.join(NOTO, "NotoSans-Regular.ttf"), size)
-
-
-def sans_bold(size):
-    return ImageFont.truetype(os.path.join(NOTO, "NotoSans-Bold.ttf"), size)
-
-
-# tag, chip colour, headline, one-line summary
+# (tag, colour, headline, summary)
 STORIES = [
-    ("NATO", (31, 78, 121),
-     "Russian missiles land in Poland",
+    ("NATO", (139, 30, 30), "Russian missiles land in Poland",
      "Three objects cross NATO airspace; Rutte calls it a grave violation."),
-    ("UKRAINE", (139, 26, 26),
-     "Russian barrage kills 8 in Kyiv",
+    ("UKRAINE", (29, 78, 137), "Russian barrage kills 8 in Kyiv",
      "400 drones and 110 missiles hit three bridges and the power grid."),
-    ("EUROPE", (67, 56, 202),
-     "UK and EU strike landmark deal",
+    ("EUROPE", (46, 107, 79), "UK and EU strike landmark deal",
      "Youth mobility for 100,000 and freer food trade agreed in Brussels."),
-    ("MARKETS", (14, 116, 144),
-     "Stocks plunge as AI rout deepens",
+    ("MARKETS", (122, 62, 0), "Stocks plunge as AI rout deepens",
      "S&P 500 drops 3.7%; Nasdaq turns negative for the year."),
-    ("BALTICS", (22, 101, 52),
-     "Estonia to shut Russia border",
+    ("BALTICS", (91, 45, 142), "Estonia to shut Russia border",
      "Crossings close from Dec 1 for at least six months; Moscow warns."),
-    ("PROTESTS", (180, 83, 9),
-     "Italy strikes as Europe protests",
+    ("PROTESTS", (176, 58, 46), "Italy strikes as Europe protests",
      "General strike in 100 cities; youth march across Europe."),
-    ("MIDDLE EAST", (157, 23, 77),
-     "Iraq retakes militia stronghold",
+    ("MIDDLE EAST", (107, 78, 0), "Iraq retakes militia stronghold",
      "Troops enter Jurf al-Sakhar in an oil-smuggling crackdown deal."),
-    ("CULTURE", (87, 83, 78),
-     "GTA VI makes $3.79bn in a day",
+    ("CULTURE", (15, 118, 110), "GTA VI makes $3.79bn in a day",
      "Take-Two hails the biggest entertainment launch in history."),
 ]
 
 
-def split_lines(draw, text, font, width):
-    """Greedy wrap: pack as many words per line as fit inside width."""
-    out = []
-    for chunk in text.split("\n"):
-        words = chunk.split()
-        if not words:
-            out.append("")
+def font(path, size):
+    return ImageFont.truetype(path, size)
+
+
+def wrap(draw, text, fnt, max_width):
+    """Greedy word wrap; returns a list of lines that each fit max_width."""
+    words = text.split()
+    lines = []
+    current = ""
+    for word in words:
+        trial = word if not current else current + " " + word
+        if draw.textlength(trial, font=fnt) <= max_width:
+            current = trial
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def wrap_balanced(draw, text, fnt, max_width):
+    """Wrap a headline so two lines are as even as possible.
+
+    Greedy wrapping leaves a single orphan word on the second line
+    ("Russian missiles land in" / "Poland"); trying every split point
+    and keeping the most even pair reads much better.
+    """
+    words = text.split()
+    if len(words) < 2:
+        return [text]
+    best = None
+    for split in range(1, len(words)):
+        first = " ".join(words[:split])
+        second = " ".join(words[split:])
+        w1 = draw.textlength(first, font=fnt)
+        w2 = draw.textlength(second, font=fnt)
+        if w1 > max_width or w2 > max_width:
             continue
-        line = words[0]
-        for word in words[1:]:
-            longer = line + " " + word
-            if draw.textlength(longer, font=font) <= width:
-                line = longer
-            else:
-                out.append(line)
-                line = word
-        out.append(line)
-    return out
+        score = abs(w1 - w2)
+        if best is None or score < best[0]:
+            best = (score, [first, second])
+    if best is not None:
+        return best[1]
+    return wrap(draw, text, fnt, max_width)
 
 
-def measure_all(draw, head_px, sum_px, inner_w):
-    """Wrap every story at the given sizes; return (cards, head font, sum font)."""
-    head_font = serif(head_px)
-    sum_font = sans(sum_px)
-    cards = []
-    for tag, colour, headline, summary in STORIES:
-        heads = split_lines(draw, headline, head_font, inner_w)
-        sums = split_lines(draw, summary, sum_font, inner_w)
-        cards.append((tag, colour, heads, sums))
-    return cards, head_font, sum_font
+def draw_page():
+    img = Image.new("RGB", (W, H), PAPER)
+    d = ImageDraw.Draw(img)
 
-
-def draw_chip(draw, x, y, tag, colour, font):
-    """A coloured pill with the tag text, returning its width."""
-    label_w = int(draw.textlength(tag, font=font)) + 20
-    height = 24
-    draw.rounded_rectangle([x, y, x + label_w, y + height],
-                           radius=height // 2, fill=colour)
-    draw.text((x + 10, y + 3), tag, font=font, fill=(255, 255, 255))
-    return label_w
-
-
-def render():
-    page = Image.new("RGB", CANVAS, PAPER)
-    draw = ImageDraw.Draw(page)
-    width, height = CANVAS
-
-    # Masthead: navy band, centred serif title, gold date line, gold rule.
-    draw.rectangle([0, 0, width, 160], fill=NAVY)
-    title_font = serif(56)
+    # ---- Masthead -------------------------------------------------------
+    band_h = 160
+    d.rectangle([0, 0, W, band_h], fill=NAVY)
+    title_f = font(SERIF_BOLD, 54)
     title = "THE WORLD IN ONE DAY"
-    title_w = draw.textlength(title, font=title_font)
-    draw.text(((width - title_w) / 2, 26), title,
-              font=title_font, fill=(255, 255, 255))
-    date_font = sans_bold(30)
-    dateline = "FRIDAY \u00b7 20 NOVEMBER 2026"
-    date_w = draw.textlength(dateline, font=date_font)
-    draw.text(((width - date_w) / 2, 100), dateline,
-              font=date_font, fill=GOLD)
-    draw.rectangle([0, 160, width, 164], fill=GOLD)
+    tw = d.textlength(title, font=title_f)
+    d.text(((W - tw) / 2, 26), title, font=title_f, fill=(255, 255, 255))
+    date_f = font(SANS_BOLD, 28)
+    date_line = "FRIDAY \u00b7 20 NOVEMBER 2026"
+    dw = d.textlength(date_line, font=date_f)
+    d.text(((W - dw) / 2, 102), date_line, font=date_f, fill=GOLD)
+    d.rectangle([0, band_h, W, band_h + 4], fill=GOLD)
 
-    # Story grid geometry.
-    margin, gap = 40, 20
-    top, bottom = 176, 962
+    # ---- Story grid ------------------------------------------------------
+    margin = 40
+    gap = 16
+    grid_top = 180
+    grid_bottom = 960
+    grid_left = margin
+    grid_right = W - margin
     cols, rows = 2, 4
-    span_w = width - 2 * margin
-    span_h = bottom - top
-    cell_w = (span_w - (cols - 1) * gap) // cols
-    cell_h = (span_h - (rows - 1) * gap) // rows
-    pad = 12
-    inner_w = cell_w - 2 * pad
+    card_w = (grid_right - grid_left - gap * (cols - 1)) // cols
+    card_h = (grid_bottom - grid_top - gap * (rows - 1)) // rows
 
-    # Pick the largest type that still fits every card, then draw.
-    picked = None
-    for head_px, sum_px in [(30, 22), (28, 21), (25, 19)]:
-        cards, head_font, sum_font = measure_all(draw, head_px, sum_px, inner_w)
-        head_step = int(head_px * 1.18)
-        sum_step = int(sum_px * 1.25)
-        chip_h = 24
-        fits = True
-        for _tag, _c, heads, sums in cards:
-            if len(heads) > 3 or len(sums) > 2:
-                fits = False
-                break
-            needed = (pad + chip_h + 7 + len(heads) * head_step
-                      + 6 + len(sums) * sum_step + pad)
-            if needed > cell_h:
-                fits = False
-                break
-        if fits:
-            picked = (cards, head_font, sum_font, head_step, sum_step, chip_h)
-            break
-    assert picked is not None, "no type size fits the cards"
-    cards, head_font, sum_font, head_step, sum_step, chip_h = picked
-    tag_font = sans_bold(17)
+    pad = 20
+    tag_f = font(SANS_BOLD, 17)
+    head_f = font(SERIF_BOLD, 29)
+    summ_f = font(SANS_REG, 21)
+    head_lh = 35
+    summ_lh = 27
+    chip_h = 26
 
-    for index, (tag, colour, heads, sums) in enumerate(cards):
-        row, col = divmod(index, cols)
-        x0 = margin + col * (cell_w + gap)
-        y0 = top + row * (cell_h + gap)
-        x1, y1 = x0 + cell_w, y0 + cell_h
-        draw.rounded_rectangle([x0, y0, x1, y1], radius=10,
-                               fill=CARD, outline=CARD_EDGE, width=1)
+    inner_w = card_w - 2 * pad
 
-        # Centre the block vertically so one-line headlines leave no dead band.
-        block_h = chip_h + 7 + len(heads) * head_step + 6 + len(sums) * sum_step
-        y = y0 + (cell_h - block_h) // 2
+    for i, (tag, colour, headline, summary) in enumerate(STORIES):
+        col = i % cols
+        row = i // cols
+        x0 = grid_left + col * (card_w + gap)
+        y0 = grid_top + row * (card_h + gap)
+        x1 = x0 + card_w
+        y1 = y0 + card_h
 
-        draw_chip(draw, x0 + pad, y, tag, colour, tag_font)
-        y += chip_h + 7
-        for line in heads:
-            draw.text((x0 + pad, y), line, font=head_font, fill=INK)
-            y += head_step
-        y += 6
-        for line in sums:
-            draw.text((x0 + pad, y), line, font=sum_font, fill=BODY_GREY)
-            y += sum_step
-        assert y <= y1 - pad + sum_step, "card content overflow"
+        d.rounded_rectangle([x0, y0, x1, y1], radius=10,
+                            fill=CARD, outline=CARD_BORDER, width=1)
 
-    # Footer: sources, then the date note.
-    foot_font = sans(15)
-    sources = "Sources: Reuters \u00b7 AP \u00b7 The Times \u00b7 CNN \u00b7 NPR"
-    src_w = draw.textlength(sources, font=foot_font)
-    draw.text(((width - src_w) / 2, 972), sources, font=foot_font, fill=FOOT_GREY)
-    note = "All events happened, or were first reported, on 20 November 2026."
-    note_w = draw.textlength(note, font=foot_font)
-    draw.text(((width - note_w) / 2, 994), note, font=foot_font, fill=FOOT_GREY)
+        # Tag chip.
+        tag_w = d.textlength(tag, font=tag_f) + 22
+        chip_x0 = x0 + pad
+        chip_y0 = y0 + 12
+        d.rounded_rectangle([chip_x0, chip_y0, chip_x0 + tag_w,
+                             chip_y0 + chip_h], radius=8, fill=colour)
+        d.text((chip_x0 + 11, chip_y0 + 4), tag, font=tag_f,
+               fill=(255, 255, 255))
 
-    page.save(TARGET, format="PNG", optimize=True)
-    size = os.path.getsize(TARGET)
-    print(f"wrote {TARGET}: {width}x{height}, {size} bytes")
-    assert size <= 1048576, "entry.png exceeds 1 MiB"
+        # Headline, at most 3 lines (balanced wrap avoids orphan words).
+        head_lines = wrap_balanced(d, headline, head_f, inner_w)
+        assert len(head_lines) <= 3, f"headline too long: {headline!r}"
+        hy = chip_y0 + chip_h + 8
+        for line in head_lines:
+            d.text((x0 + pad, hy), line, font=head_f, fill=INK)
+            hy += head_lh
+
+        # Summary, at most 2 lines.
+        summ_lines = wrap(d, summary, summ_f, inner_w)
+        assert len(summ_lines) <= 2, f"summary too long: {summary!r}"
+        sy = hy + 5
+        for line in summ_lines:
+            d.text((x0 + pad, sy), line, font=summ_f, fill=INK)
+            sy += summ_lh
+
+        # Nothing may overflow the card.
+        assert sy <= y1 - 6, f"card overflow: {headline!r}"
+
+    # ---- Footer ----------------------------------------------------------
+    foot_f = font(SANS_REG, 18)
+    src = "Sources: Reuters \u00b7 AP \u00b7 The Times \u00b7 CNN \u00b7 NPR"
+    date_note = "All events happened, or were first reported, on 20 November 2026."
+    for j, line in enumerate((src, date_note)):
+        lw = d.textlength(line, font=foot_f)
+        d.text(((W - lw) / 2, 968 + j * 26), line, font=foot_f,
+               fill=FOOTER_GREY)
+
+    img.save(OUT, format="PNG", optimize=True)
+    return img
 
 
 if __name__ == "__main__":
-    render()
+    draw_page()
+    print("wrote", OUT)
